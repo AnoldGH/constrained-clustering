@@ -54,6 +54,31 @@ class ConstrainedClustering {
             return original_to_new_id_map;
         }
 
+        static inline char GetDelimiter(string filepath) {
+            // Read in selected file
+            std::ifstream edgelist(filepath);
+            // Placeholder for line
+            std::string line;
+
+            // Read lines until we find a non-comment line or reach end of file
+            while (getline(edgelist, line)) {
+                // Check for common delimiters (comma, tab, space) in the line
+                // and return the appropriate delimiter character
+                if (line.find(',') != string::npos) {
+                    return ',';
+                }
+                else if (line.find('\t') != string::npos) {
+                    return '\t';
+                }
+                else if (line.find(' ') != string::npos) {
+                    return ' ';
+                }
+            }
+
+            // If no known delimiter is found, throw an error
+            throw invalid_argument("Could not detect filetype for " + filepath);
+}
+
         static inline std::map<int, int> ReadCommunities(const std::map<std::string, int>& original_to_new_id_map, std::string existing_clustering) {
             std::map<int, int> partition_map;
             std::ifstream existing_clustering_file(existing_clustering);

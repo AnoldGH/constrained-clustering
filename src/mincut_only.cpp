@@ -2,15 +2,29 @@
 
 int MincutOnly::main() {
     this->WriteToLogFile("Loading the initial graph" , Log::info);
-    FILE* edgelist_file = fopen(this->edgelist.c_str(), "r");
+    // FILE* edgelist_file = fopen(this->edgelist.c_str(), "r");
+
     igraph_t graph;
     /* igraph_read_graph_edgelist(&graph, edgelist_file, 0, false); */
     igraph_set_attribute_table(&igraph_cattribute_table);
-    igraph_read_graph_ncol(&graph, edgelist_file, NULL, 1, IGRAPH_ADD_WEIGHTS_IF_PRESENT, IGRAPH_UNDIRECTED);
+    // igraph_read_graph_ncol(&graph, edgelist_file, NULL, 1, IGRAPH_ADD_WEIGHTS_IF_PRESENT, IGRAPH_UNDIRECTED);
     /* if(!igraph_cattribute_has_attr(&graph, IGRAPH_ATTRIBUTE_EDGE, "weight")) { */
     /*     SetIgraphAllEdgesWeight(&graph, 1.0); */
     /* } */
-    fclose(edgelist_file);
+
+    // Read edgelist into igraph
+    char delimiter = GetDelimiter(this->edgelist);
+    std::ifstream edgelist_file(this->edgelist);
+
+    std::string line;
+    while (std::getline(edgelist_file, line)) {
+        std::stringstream ss(line);
+        int u, v;
+        ss >> u >> delimiter >> v;
+        igraph_add_edge(&g, u, v);
+    }
+
+    // fclose(edgelist_file);
     this->WriteToLogFile("Finished loading the initial graph" , Log::info);
 
     int before_mincut_number_of_clusters = -1;
