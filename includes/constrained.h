@@ -54,28 +54,74 @@ class ConstrainedClustering {
             return original_to_new_id_map;
         }
 
+        static inline char GetDelimiter(std::string filepath) {
+            // Read in selected file
+            std::ifstream edgelist(filepath);
+            // Placeholder for line
+            std::string line;
+
+            // Read lines until we find a non-comment line or reach end of file
+            while (std::getline(edgelist, line)) {
+                // Find acceptable delimiters
+                if (line.find(',') != std::string::npos) {
+                    return ',';
+                }
+                else if (line.find('\t') != std::string::npos) {
+                    return '\t';
+                }
+                else if (line.find(' ') != std::string::npos) {
+                    return ' ';
+                }
+            }
+
+            // If no known delimiter is found, throw an error
+            throw std::invalid_argument("Could not detect filetype for " + filepath);
+        }
+
         static inline std::map<int, int> ReadCommunities(const std::map<std::string, int>& original_to_new_id_map, std::string existing_clustering) {
             std::map<int, int> partition_map;
             std::ifstream existing_clustering_file(existing_clustering);
             std::string node_id;
+            std::string cluster_str;
             int cluster_id = -1;
-            while (existing_clustering_file >> node_id >> cluster_id) {
+
+            char delimiter = ConstrainedClustering::GetDelimiter(existing_clustering);
+            std::string header;
+
+            std::getline(existing_clustering_file, header); // read header
+
+            while (std::getline(existing_clustering_file, node_id, delimiter) &&
+                std::getline(existing_clustering_file, cluster_str)) {
+                cluster_id = std::stoi(cluster_str);
                 if(original_to_new_id_map.contains(node_id)) {
                     int new_node_id = original_to_new_id_map.at(node_id);
                     partition_map[new_node_id] = cluster_id;
                 }
             }
+
             return partition_map;
         }
 
         static inline std::map<int, int> ReadCommunities(std::string existing_clustering) {
             std::map<int, int> partition_map;
             std::ifstream existing_clustering_file(existing_clustering);
+            std::string node_str;
+            std::string cluster_str;
             int node_id = -1;
             int cluster_id = -1;
-            while (existing_clustering_file >> node_id >> cluster_id) {
+
+            char delimiter = ConstrainedClustering::GetDelimiter(existing_clustering);
+            std::string header;
+
+            std::getline(existing_clustering_file, header); // read header
+
+            while (std::getline(existing_clustering_file, node_str, delimiter) && std::getline(existing_clustering_file, cluster_str)) {
+                node_id = std::stoi(node_str);
+                cluster_id = std::stoi(cluster_str);
+
                 partition_map[node_id] = cluster_id;
             }
+
             return partition_map;
         }
 
