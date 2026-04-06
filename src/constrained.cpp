@@ -1,5 +1,9 @@
 #include "constrained.h"
 #include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <cstring>
 
 std::map<int, std::vector<int>> ConstrainedClustering::ReverseMap(const std::map<int, int>& node_id_to_cluster_id_map) {
     std::map<int, std::vector<int>> reversed_map;
@@ -34,21 +38,28 @@ std::map<std::string, int> ConstrainedClustering::GetOriginalToNewIdMap(std::str
     std::map<std::string, int> original_to_new_id_map;
     int next_node_id = 0;
 
+    int fd = open(edgelist.c_str(), O_RDONLY);
+    if (fd < 0) {
+        throw std::runtime_error("Failed to open edgelist: " + edgelist);
+    }
+    struct stat st;
+    fstat(fd, &st);
+    void* mapped = mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+    if (mapped == MAP_FAILED) {
+        close(fd);
+        throw std::runtime_error("mmap failed for edgelist: " + edgelist);
+    }
+    madvise(mapped, st.st_size, MADV_SEQUENTIAL | MADV_WILLNEED);
+    const char* data = static_cast<const char*>(mapped);
+
     if (is_binary_edgelist(edgelist)) {
-        std::ifstream file(edgelist, std::ios::binary);
-        if (!file.is_open()) {
-            throw std::runtime_error("Failed to open binary edgelist: " + edgelist);
-        }
-        uint32_t num_edges;
-        file.read(reinterpret_cast<char*>(&num_edges), sizeof(num_edges));
+        uint64_t num_edges;
+        memcpy(&num_edges, data, sizeof(num_edges));
+        const int32_t* pairs = reinterpret_cast<const int32_t*>(data + sizeof(num_edges));
 
-        for (uint32_t i = 0; i < num_edges; ++i) {
-            int32_t source, target;
-            file.read(reinterpret_cast<char*>(&source), sizeof(source));
-            file.read(reinterpret_cast<char*>(&target), sizeof(target));
-
-            std::string source_str = std::to_string(source);
-            std::string target_str = std::to_string(target);
+        for (uint64_t i = 0; i < num_edges; ++i) {
+            std::string source_str = std::to_string(pairs[i * 2]);
+            std::string target_str = std::to_string(pairs[i * 2 + 1]);
 
             if (!original_to_new_id_map.contains(source_str)) {
                 original_to_new_id_map[source_str] = next_node_id++;
@@ -58,98 +69,115 @@ std::map<std::string, int> ConstrainedClustering::GetOriginalToNewIdMap(std::str
             }
         }
         this->num_edges = static_cast<int>(num_edges);
-        return original_to_new_id_map;
+    } else {
+        // Text path
+        const char* end = data + st.st_size;
+        const char* p = data;
+        char delimiter = get_delimiter(edgelist);
+
+        // Skip header line
+        while (p < end && *p != '\n') ++p;
+        if (p < end) ++p;
+
+        int line_count = 0;
+        while (p < end) {
+            // Extract source token
+            const char* tok_start = p;
+            while (p < end && *p != delimiter && *p != '\n' && *p != '\r') ++p;
+            std::string source(tok_start, p - tok_start);
+            if (p < end && *p == delimiter) ++p;
+
+            // Extract target token
+            tok_start = p;
+            while (p < end && *p != delimiter && *p != '\n' && *p != '\r') ++p;
+            std::string target(tok_start, p - tok_start);
+
+            // Skip to next line
+            while (p < end && *p != '\n') ++p;
+            if (p < end) ++p;
+
+            if (!original_to_new_id_map.contains(source)) {
+                original_to_new_id_map[source] = next_node_id++;
+            }
+            if (!original_to_new_id_map.contains(target)) {
+                original_to_new_id_map[target] = next_node_id++;
+            }
+            line_count++;
+        }
+        this->num_edges = line_count;
     }
 
-    // Text path (fallback)
-    char delimiter = get_delimiter(edgelist);
-    std::ifstream edgelist_file(edgelist);
-    std::string line;
-    int line_no = 0;
-    while(std::getline(edgelist_file, line)) {
-        std::stringstream ss(line);
-        std::string current_value;
-        std::vector<std::string> current_line;
-        while(std::getline(ss, current_value, delimiter)) {
-            current_line.push_back(current_value);
-        }
-        if(line_no == 0) {
-            line_no ++;
-            continue;
-        }
-        std::string source = current_line[0];
-        std::string target = current_line[1];
-        if (!original_to_new_id_map.contains(source)) {
-            original_to_new_id_map[source] = next_node_id;
-            next_node_id ++;
-        }
-        if (!original_to_new_id_map.contains(target)) {
-            original_to_new_id_map[target] = next_node_id;
-            next_node_id ++;
-        }
-        line_no ++;
-    }
-    this->num_edges = line_no - 1;
+    munmap(mapped, st.st_size);
+    close(fd);
     return original_to_new_id_map;
 }
 
 void ConstrainedClustering::LoadEdgesFromFile(igraph_t* graph, std::string edgelist, const std::map<std::string, int>& original_to_new_id_map) {
     igraph_add_vertices(graph, original_to_new_id_map.size(), NULL);
 
+    int fd = open(edgelist.c_str(), O_RDONLY);
+    if (fd < 0) {
+        throw std::runtime_error("Failed to open edgelist: " + edgelist);
+    }
+    struct stat st;
+    fstat(fd, &st);
+    void* mapped = mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+    if (mapped == MAP_FAILED) {
+        close(fd);
+        throw std::runtime_error("mmap failed for edgelist: " + edgelist);
+    }
+    madvise(mapped, st.st_size, MADV_SEQUENTIAL | MADV_WILLNEED);
+    const char* data = static_cast<const char*>(mapped);
+
     if (is_binary_edgelist(edgelist)) {
-        std::ifstream file(edgelist, std::ios::binary);
-        if (!file.is_open()) {
-            throw std::runtime_error("Failed to open binary edgelist: " + edgelist);
-        }
-        uint32_t num_edges;
-        file.read(reinterpret_cast<char*>(&num_edges), sizeof(num_edges));
+        uint64_t num_edges;
+        memcpy(&num_edges, data, sizeof(num_edges));
+        const int32_t* pairs = reinterpret_cast<const int32_t*>(data + sizeof(num_edges));
 
         igraph_vector_int_t edges;
         igraph_vector_int_init(&edges, num_edges * 2);
-        int edge_index = 0;
-        for (uint32_t i = 0; i < num_edges; ++i) {
-            int32_t source, target;
-            file.read(reinterpret_cast<char*>(&source), sizeof(source));
-            file.read(reinterpret_cast<char*>(&target), sizeof(target));
-
-            VECTOR(edges)[edge_index++] = original_to_new_id_map.at(std::to_string(source));
-            VECTOR(edges)[edge_index++] = original_to_new_id_map.at(std::to_string(target));
+        for (uint64_t i = 0; i < num_edges; ++i) {
+            VECTOR(edges)[i * 2]     = original_to_new_id_map.at(std::to_string(pairs[i * 2]));
+            VECTOR(edges)[i * 2 + 1] = original_to_new_id_map.at(std::to_string(pairs[i * 2 + 1]));
         }
         igraph_add_edges(graph, &edges, NULL);
         igraph_vector_int_destroy(&edges);
-        return;
+    } else {
+        // Text path
+        const char* end = data + st.st_size;
+        const char* p = data;
+        char delimiter = get_delimiter(edgelist);
+
+        // Skip header line
+        while (p < end && *p != '\n') ++p;
+        if (p < end) ++p;
+
+        igraph_vector_int_t edges;
+        igraph_vector_int_init(&edges, this->num_edges * 2);
+        int edge_index = 0;
+
+        while (p < end) {
+            const char* tok_start = p;
+            while (p < end && *p != delimiter && *p != '\n' && *p != '\r') ++p;
+            std::string source(tok_start, p - tok_start);
+            if (p < end && *p == delimiter) ++p;
+
+            tok_start = p;
+            while (p < end && *p != delimiter && *p != '\n' && *p != '\r') ++p;
+            std::string target(tok_start, p - tok_start);
+
+            while (p < end && *p != '\n') ++p;
+            if (p < end) ++p;
+
+            VECTOR(edges)[edge_index++] = original_to_new_id_map.at(source);
+            VECTOR(edges)[edge_index++] = original_to_new_id_map.at(target);
+        }
+        igraph_add_edges(graph, &edges, NULL);
+        igraph_vector_int_destroy(&edges);
     }
 
-    // Text path (fallback)
-    char delimiter = get_delimiter(edgelist);
-    std::ifstream edgelist_file(edgelist);
-    std::string line;
-    igraph_vector_int_t edges;
-    igraph_vector_int_init(&edges, this->num_edges * 2);
-    int line_no = 0;
-    int edge_index = 0;
-    while(std::getline(edgelist_file, line)) {
-        std::stringstream ss(line);
-        std::string current_value;
-        std::vector<std::string> current_line;
-        while(std::getline(ss, current_value, delimiter)) {
-            current_line.push_back(current_value);
-        }
-        if(line_no == 0) {
-            line_no ++;
-            continue;
-        }
-        std::string source = current_line[0];
-        std::string target = current_line[1];
-        VECTOR(edges)[edge_index] = original_to_new_id_map.at(source);
-        edge_index ++;
-        VECTOR(edges)[edge_index] = original_to_new_id_map.at(target);
-        edge_index ++;
-        line_no ++;
-
-    }
-    igraph_add_edges(graph, &edges, NULL);
-    igraph_vector_int_destroy(&edges);
+    munmap(mapped, st.st_size);
+    close(fd);
 }
 
 void ConstrainedClustering::WriteClusterHistory(const std::map<int, std::vector<int>>& parent_to_child_map) {
@@ -296,7 +324,7 @@ void ConstrainedClustering::WriteYieldCluster(const igraph_t* graph,
     {
         std::string path = this->yield_dir + "/" + std::to_string(yield_id) + ".bedgelist";
         std::ofstream out(path, std::ios::binary);
-        uint32_t num_edges = static_cast<uint32_t>(edges.size());
+        uint64_t num_edges = edges.size();
         out.write(reinterpret_cast<const char*>(&num_edges), sizeof(num_edges));
         for (const auto& [src, tgt] : edges) {
             out.write(reinterpret_cast<const char*>(&src), sizeof(src));
@@ -322,13 +350,13 @@ void ConstrainedClustering::WriteYieldCluster(const igraph_t* graph,
 
     // Notify parent process via pipe (if connected)
     if (this->yield_fd >= 0) {
-        int32_t record[3] = {
+        struct { int32_t yield_id; int32_t node_count; int64_t edge_count; } record = {
             static_cast<int32_t>(yield_id),
             static_cast<int32_t>(cluster_nodes.size()),
-            static_cast<int32_t>(edges.size())
+            static_cast<int64_t>(edges.size())
         };
-        // Write atomically (12 bytes < PIPE_BUF, guaranteed atomic on POSIX)
-        ::write(this->yield_fd, record, sizeof(record));
+        // Write atomically (16 bytes < PIPE_BUF, guaranteed atomic on POSIX)
+        ::write(this->yield_fd, &record, sizeof(record));
     }
 
     this->WriteToLogFile("Yielded sub-cluster " + std::to_string(yield_id) +
