@@ -17,6 +17,10 @@
 #include <cstdint>
 #include <algorithm>
 #include <filesystem>
+#include <cstring>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #include <libleidenalg/GraphHelper.h>
 #include <libleidenalg/Optimiser.h>
@@ -108,78 +112,136 @@ class ConstrainedClustering {
         static inline std::map<int, int> ReadCommunities(const std::map<std::string, int>& original_to_new_id_map, std::string existing_clustering) {
             std::map<int, int> partition_map;
 
+            int fd = open(existing_clustering.c_str(), O_RDONLY);
+            if (fd < 0) {
+                throw std::runtime_error("Failed to open cluster file: " + existing_clustering);
+            }
+            struct stat st;
+            fstat(fd, &st);
+            void* mapped = mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+            if (mapped == MAP_FAILED) {
+                close(fd);
+                throw std::runtime_error("mmap failed for cluster file: " + existing_clustering);
+            }
+            madvise(mapped, st.st_size, MADV_SEQUENTIAL | MADV_WILLNEED);
+            const char* data = static_cast<const char*>(mapped);
+
             if (is_binary_cluster(existing_clustering)) {
-                std::ifstream file(existing_clustering, std::ios::binary);
-                if (!file.is_open()) {
-                    throw std::runtime_error("Failed to open binary cluster: " + existing_clustering);
-                }
                 uint32_t num_entries;
-                file.read(reinterpret_cast<char*>(&num_entries), sizeof(num_entries));
+                memcpy(&num_entries, data, sizeof(num_entries));
+                const int32_t* pairs = reinterpret_cast<const int32_t*>(data + sizeof(num_entries));
                 for (uint32_t i = 0; i < num_entries; ++i) {
-                    int32_t node_id, cluster_id;
-                    file.read(reinterpret_cast<char*>(&node_id), sizeof(node_id));
-                    file.read(reinterpret_cast<char*>(&cluster_id), sizeof(cluster_id));
-                    std::string node_str = std::to_string(node_id);
+                    std::string node_str = std::to_string(pairs[i * 2]);
+                    int cluster_id = pairs[i * 2 + 1];
                     if (original_to_new_id_map.contains(node_str)) {
                         partition_map[original_to_new_id_map.at(node_str)] = cluster_id;
                     }
                 }
-                return partition_map;
+            } else {
+                // Text path
+                const char* end = data + st.st_size;
+                const char* p = data;
+                char delimiter = get_delimiter(existing_clustering);
+
+                // Skip header line
+                while (p < end && *p != '\n') ++p;
+                if (p < end) ++p;
+
+                while (p < end) {
+                    const char* tok_start = p;
+                    while (p < end && *p != delimiter && *p != '\n' && *p != '\r') ++p;
+                    std::string node_id(tok_start, p - tok_start);
+                    if (p < end && *p == delimiter) ++p;
+
+                    tok_start = p;
+                    while (p < end && *p != delimiter && *p != '\n' && *p != '\r') ++p;
+                    int cluster_id = 0;
+                    bool neg = false;
+                    const char* q = tok_start;
+                    if (q < p && *q == '-') { neg = true; ++q; }
+                    while (q < p && *q >= '0' && *q <= '9') {
+                        cluster_id = cluster_id * 10 + (*q - '0');
+                        ++q;
+                    }
+                    if (neg) cluster_id = -cluster_id;
+
+                    while (p < end && *p != '\n') ++p;
+                    if (p < end) ++p;
+
+                    if (original_to_new_id_map.contains(node_id)) {
+                        partition_map[original_to_new_id_map.at(node_id)] = cluster_id;
+                    }
+                }
             }
 
-            // Text path (fallback)
-            char delimiter = get_delimiter(existing_clustering);
-            std::ifstream existing_clustering_file(existing_clustering);
-            std::string line;
-            int line_no = 0;
-            while(std::getline(existing_clustering_file, line)) {
-                std::stringstream ss(line);
-                std::string current_value;
-                std::vector<std::string> current_line;
-                while(std::getline(ss, current_value, delimiter)) {
-                    current_line.push_back(current_value);
-                }
-                std::string node_id = current_line[0];
-                if(line_no == 0) {
-                    line_no ++;
-                    continue;
-                }
-                int cluster_id = std::atoi(current_line[1].c_str());
-                if(original_to_new_id_map.contains(node_id)) {
-                    int new_node_id = original_to_new_id_map.at(node_id);
-                    partition_map[new_node_id] = cluster_id;
-                }
-                line_no ++;
-            }
+            munmap(mapped, st.st_size);
+            close(fd);
             return partition_map;
         }
 
         static inline std::map<int, int> ReadCommunities(std::string existing_clustering) {
             std::map<int, int> partition_map;
 
+            int fd = open(existing_clustering.c_str(), O_RDONLY);
+            if (fd < 0) {
+                throw std::runtime_error("Failed to open cluster file: " + existing_clustering);
+            }
+            struct stat st;
+            fstat(fd, &st);
+            void* mapped = mmap(nullptr, st.st_size, PROT_READ, MAP_PRIVATE | MAP_POPULATE, fd, 0);
+            if (mapped == MAP_FAILED) {
+                close(fd);
+                throw std::runtime_error("mmap failed for cluster file: " + existing_clustering);
+            }
+            madvise(mapped, st.st_size, MADV_SEQUENTIAL | MADV_WILLNEED);
+            const char* data = static_cast<const char*>(mapped);
+
             if (is_binary_cluster(existing_clustering)) {
-                std::ifstream file(existing_clustering, std::ios::binary);
-                if (!file.is_open()) {
-                    throw std::runtime_error("Failed to open binary cluster: " + existing_clustering);
-                }
                 uint32_t num_entries;
-                file.read(reinterpret_cast<char*>(&num_entries), sizeof(num_entries));
+                memcpy(&num_entries, data, sizeof(num_entries));
+                const int32_t* pairs = reinterpret_cast<const int32_t*>(data + sizeof(num_entries));
                 for (uint32_t i = 0; i < num_entries; ++i) {
-                    int32_t node_id, cluster_id;
-                    file.read(reinterpret_cast<char*>(&node_id), sizeof(node_id));
-                    file.read(reinterpret_cast<char*>(&cluster_id), sizeof(cluster_id));
+                    partition_map[pairs[i * 2]] = pairs[i * 2 + 1];
+                }
+            } else {
+                // Text path
+                const char* end = data + st.st_size;
+                const char* p = data;
+
+                while (p < end) {
+                    // Skip whitespace
+                    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) ++p;
+                    if (p >= end) break;
+
+                    // Parse node_id
+                    int node_id = 0;
+                    bool neg = false;
+                    if (*p == '-') { neg = true; ++p; }
+                    while (p < end && *p >= '0' && *p <= '9') {
+                        node_id = node_id * 10 + (*p - '0');
+                        ++p;
+                    }
+                    if (neg) node_id = -node_id;
+
+                    // Skip whitespace between fields
+                    while (p < end && (*p == ' ' || *p == '\t')) ++p;
+
+                    // Parse cluster_id
+                    int cluster_id = 0;
+                    neg = false;
+                    if (p < end && *p == '-') { neg = true; ++p; }
+                    while (p < end && *p >= '0' && *p <= '9') {
+                        cluster_id = cluster_id * 10 + (*p - '0');
+                        ++p;
+                    }
+                    if (neg) cluster_id = -cluster_id;
+
                     partition_map[node_id] = cluster_id;
                 }
-                return partition_map;
             }
 
-            // Text path (fallback)
-            std::ifstream existing_clustering_file(existing_clustering);
-            int node_id = -1;
-            int cluster_id = -1;
-            while (existing_clustering_file >> node_id >> cluster_id) {
-                partition_map[node_id] = cluster_id;
-            }
+            munmap(mapped, st.st_size);
+            close(fd);
             return partition_map;
         }
 
