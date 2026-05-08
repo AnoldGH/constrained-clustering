@@ -1,7 +1,10 @@
 #include "mincut_custom.h"
 
 int MinCutCustom::ComputeMinCut() {
-    /*
+    // Degree-1 fast path: scan for any leaf node and return it as a trivial
+    // mincut (cut=1) without invoking cactus. Functionally identical to what
+    // cactus would find on a leaf, but O(V) instead of O((V+E)*E).
+    
     igraph_vector_int_t node_degrees;
     igraph_vector_int_init(&node_degrees, igraph_vcount(this->graph));
     igraph_degree(this->graph, &node_degrees, igraph_vss_all(), IGRAPH_ALL, IGRAPH_NO_LOOPS);
@@ -23,7 +26,6 @@ int MinCutCustom::ComputeMinCut() {
         return 1;
     }
     igraph_vector_int_destroy(&node_degrees);
-    */
 
     int edge_cut_size = -1;
     auto cfg = configuration::getConfig();

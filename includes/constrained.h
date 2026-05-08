@@ -47,6 +47,12 @@ class ConstrainedClustering {
             }
         }
 
+        void FlushLogFile() {
+            if(this->log_level > -1 && this->log_file_handle.is_open()) {
+                this->log_file_handle.flush();
+            }
+        }
+
         virtual int main() = 0;
         int WriteToLogFile(std::string message, Log message_type);
         void WritePartitionMap(std::map<int,int>& final_partition);
