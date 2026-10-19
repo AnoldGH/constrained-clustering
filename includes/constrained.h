@@ -47,6 +47,12 @@ class ConstrainedClustering {
             }
         }
 
+        void FlushLogFile() {
+            if(this->log_level > -1 && this->log_file_handle.is_open()) {
+                this->log_file_handle.flush();
+            }
+        }
+
         virtual int main() = 0;
         int WriteToLogFile(std::string message, Log message_type);
         void WritePartitionMap(std::map<int,int>& final_partition);
@@ -562,16 +568,22 @@ class ConstrainedClustering {
 
         /* F(n) = C log_x(n), where C and x are parameters specified by the user (our default is C=1 and x=10) */
         /* G(n) = C n^x, where C and x are parameters specified by the user (here, presumably 0<x<2). Note that x=1 makes it linear. */
+        /* Shared comparison for every criterion: the cluster is well-connected iff its
+         * mincut strictly exceeds the criterion's threshold F(n). A tie (within 1e-9)
+         * counts as NOT well-connected. Keeping one comparison for all three criteria
+         * is what makes them directly comparable to each other. */
+        static inline bool ExceedsThreshold(double threshold_value, int edge_cut_size) {
+            bool is_close = std::abs(threshold_value - edge_cut_size) <= 0.000000001;
+            return !is_close && threshold_value < edge_cut_size;
+        }
+
         static inline bool IsWellConnected(ConnectednessCriterion current_connectedness_criterion, double connectedness_criterion_c, double connectedness_criterion_x, double pre_computed_log, int in_partition_size, int out_partition_size, int edge_cut_size, const std::string& criterion = "") {
             if (current_connectedness_criterion == ConnectednessCriterion::Logarithimic) {
-                /* bool node_connectivity = connectedness_criterion_c * std::log(in_partition_size + out_partition_size) / std::log(connectedness_criterion_x) < edge_cut_size; */
                 double threshold_value = pre_computed_log * std::log(in_partition_size + out_partition_size);
-                bool is_close = std::abs(threshold_value - edge_cut_size) <= 0.000000001;
-                bool node_connectivity = !is_close && threshold_value < edge_cut_size;
-                return node_connectivity;
+                return ExceedsThreshold(threshold_value, edge_cut_size);
             } else if (current_connectedness_criterion == ConnectednessCriterion::Exponential) {
-                bool node_connectivity = connectedness_criterion_c * std::pow(in_partition_size + out_partition_size, connectedness_criterion_x) < edge_cut_size;
-                return node_connectivity;
+                double threshold_value = connectedness_criterion_c * std::pow(in_partition_size + out_partition_size, connectedness_criterion_x);
+                return ExceedsThreshold(threshold_value, edge_cut_size);
             } else if (current_connectedness_criterion == ConnectednessCriterion::Custom) {
                 // Add custom connectedness criterion checks here.
                 // Example:
@@ -587,17 +599,23 @@ class ConstrainedClustering {
                  * (999, inf) -> threshold = ceil( sqrt(n) / 10 )
                  */
                 if (criterion == "piecewise") {
+                    // F(n) is the largest cut that is still NOT acceptable, so that the
+                    // shared "mincut > F(n)" test reproduces this criterion's published
+                    // bands exactly: cut >= 1 / 2 / 3 / ceil(sqrt(n)/10) by size band.
+                    // Band 1 deliberately accepts any connected cluster under 100 nodes;
+                    // that escape hatch is part of the criterion, not a rounding artifact.
                     int cluster_size = in_partition_size + out_partition_size;
-                    if (cluster_size < 100) {   // (0, 100)
-                        return edge_cut_size >= 1;
-                    } else if (cluster_size <= 500) {   // [100, 500]
-                        return edge_cut_size >= 2;
-                    } else if (cluster_size <= 999) {   // (500, 999]
-                        return edge_cut_size >= 3;
-                    } else {    // the rest
-                        double threshold_value = 0.1 * std::pow(cluster_size, 0.5);   // sqrt(n) / 10
-                        return edge_cut_size >= std::ceil(threshold_value);
+                    double threshold_value;
+                    if (cluster_size < 100) {   // (0, 100)      -> cut >= 1
+                        threshold_value = 0.0;
+                    } else if (cluster_size <= 500) {   // [100, 500]  -> cut >= 2
+                        threshold_value = 1.0;
+                    } else if (cluster_size <= 999) {   // (500, 999]  -> cut >= 3
+                        threshold_value = 2.0;
+                    } else {    // the rest                     -> cut >= ceil(sqrt(n)/10)
+                        threshold_value = std::ceil(0.1 * std::pow(cluster_size, 0.5)) - 1.0;
                     }
+                    return ExceedsThreshold(threshold_value, edge_cut_size);
                 }
 
                 return false;
